@@ -19,8 +19,10 @@ from lib4sbom.output import SBOMOutput
 from lib4sbom.parser import SBOMParser
 
 from lib4vex.openvex.openvex_generator import OpenVEXGenerator
-from lib4vex.version import VERSION
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 class VEXGenerator:
     """
@@ -31,8 +33,7 @@ class VEXGenerator:
         self,
         vex_type: str = "openvex",
         author: str = "",
-        application: str = "lib4vex",
-        version: str = VERSION,
+        **kwargs
     ):
 
         self.set_type(vex_type, author)
@@ -135,71 +136,101 @@ class VEXGenerator:
         filename: str = "",
         send_to_output: bool = True,
     ) -> None:
-        vex_update = False
-        # Does file already exist? If so, update
-        if len(filename) > 0:
-            # Check path
-            filePath = Path(filename)
-            # Check if path exists and valid file
-            if filePath.exists() and filePath.is_file():
-                # Assume that processing can proceed
-                vex_update = True
-        if self.debug:
-            print (f"[STATUS] VEX update {vex_update}")
-        if vex_update:
-            vexparser = VEXParser(vex_type=self.vex_type)
-            # Read VEX file
-            if self.debug:
-                print (f"[PARSE] Parse vex file {filename}")
-            vexparser.parse(filename)
-            orig_metadata = vexparser.get_metadata()
-            for attribute in orig_metadata.keys():
-                # Copy metadata if not already specified
-                if metadata.get(attribute) is None:
-                    metadata[attribute]=orig_metadata[attribute]
-            if self.debug:
-                print (metadata)
-            orig_vulnerabilities = vexparser.get_vulnerabilities()
-            if self.debug:
-                print(orig_vulnerabilities)
-            # Add vulnerabilities which aren't being updated
-            for orig_vuln in orig_vulnerabilities:
-                include_vulnerability = True
-                for vuln in vex_data:
-                    if orig_vuln['id'] == vuln['id']:
-                        # Previous vulnerability being updated, so don't include
-                        include_vulnerability = False
-                        break
-                if include_vulnerability:
-                    if self.debug:
-                        print (f"Add {orig_vuln['id']}")
-                    orig_vuln['update']=False
-                    vex_data.append(orig_vuln)
-        if len(vex_data) > 0:
-            if self.debug:
-                print(vex_data)
-            # Validate vulnerabilities against SBOM
-            vex_vulnerabilities = self._validate_vulnerabilities(vex_data, self.components)
-            if self.debug:
-                print(vex_vulnerabilities)
-            self.element_set = {}
-            if self.vex_type == "openvex":
-                self.vex.generate_openvex(vex_vulnerabilities, metadata)
-            elif self.vex_type == "cyclonedx":
-                self.vex.generate_cyclonedx(vex_vulnerabilities, self.product, metadata)
-            elif self.vex_type == "spdx":
-                self.vex.generate_spdx(vex_vulnerabilities, metadata, self.product)
-            else:
-                self.vex.generate_csaf(vex_vulnerabilities, metadata, self.product)
-            if send_to_output:
-                if vex_update:
-                    # Preserve file
-                    revision = self.vex.get_revision()
-                    # Separate filename into directory and filename
-                    base=str(filePath.parent)
-                    name=str(filePath.name)
-                    shutil.copy(filename,f"{base}/{revision}_{name}")
-                sbom_out = SBOMOutput(filename, output_format="json")
-                sbom_out.generate_output(self.vex.get_document())
+        self._generate(
+            project_name=project_name, 
+            vex_data=vex_data, 
+            metadata=metadata, 
+            filename=filename, 
+            send_to_output=send_to_output
+        )
+
+    def generate_dict(
+        self,
+        vex_data = [],
+        metadata = {},
+    ) -> dict:
+        return self._generate(
+            vex_data=vex_data, 
+            metadata=metadata,
+            file_target="stream"
+        )
+
+    def _generate(
+        self,
+        vex_data = [],
+        metadata = {},
+        filename: str = "",
+        send_to_output: bool = True,
+        file_target: str = "file",
+        **kwargs
+    ):
+        if file_target == "file":
+            vex_update = False
+            # Does file already exist? If so, update
+            if len(filename) > 0:
+                # Check path
+                filePath = Path(filename)
+                # Check if path exists and valid file
+                if filePath.exists() and filePath.is_file():
+                    # Assume that processing can proceed
+                    vex_update = True
+            
+            logger.debug(f"[STATUS] VEX update {vex_update}")
+            
+            if vex_update:
+                vexparser = VEXParser(vex_type=self.vex_type)
+                # Read VEX file
+                logger.debug(f"[PARSE] Parse vex file {filename}")
+                vexparser.parse(filename)
+                orig_metadata = vexparser.get_metadata()
+                for attribute in orig_metadata.keys():
+                    # Copy metadata if not already specified
+                    if metadata.get(attribute) is None:
+                        metadata[attribute]=orig_metadata[attribute]
+                logger.debug(metadata)
+                orig_vulnerabilities = vexparser.get_vulnerabilities()
+                logger.debug(orig_vulnerabilities)
+                # Add vulnerabilities which aren't being updated
+                for orig_vuln in orig_vulnerabilities:
+                    include_vulnerability = True
+                    for vuln in vex_data:
+                        if orig_vuln['id'] == vuln['id']:
+                            # Previous vulnerability being updated, so don't include
+                            include_vulnerability = False
+                            break
+                    if include_vulnerability:
+                        logger.debug(f"Add {orig_vuln['id']}")
+                        orig_vuln['update']=False
+                        vex_data.append(orig_vuln)
+            if len(vex_data) > 0:
+                self._generate_vex_doc(vex_data, metadata)
+                if send_to_output:
+                    if vex_update:
+                        # Preserve file
+                        revision = self.vex.get_revision()
+                        # Separate filename into directory and filename
+                        base=str(filePath.parent)
+                        name=str(filePath.name)
+                        shutil.copy(filename,f"{base}/{revision}_{name}")
+                    sbom_out = SBOMOutput(filename, output_format="json")
+                    sbom_out.generate_output(self.vex.get_document())
+        elif file_target == "stream":
+            self._generate_vex_doc(vex_data, metadata)
+            return self.vex.get_document()
+
+    def _generate_vex_doc(self, vex_data, metadata):
+        logger.debug(vex_data)
+        # Validate vulnerabilities against SBOM
+        vex_vulnerabilities = self._validate_vulnerabilities(vex_data, self.components)
+        logger.debug(vex_vulnerabilities)
+        self.element_set = {}
+        if self.vex_type == "openvex":
+            self.vex.generate_openvex(vex_vulnerabilities, metadata)
+        elif self.vex_type == "cyclonedx":
+            self.vex.generate_cyclonedx(vex_vulnerabilities, self.product, metadata)
+        elif self.vex_type == "spdx":
+            self.vex.generate_spdx(vex_vulnerabilities, metadata, self.product)
+        else:
+            self.vex.generate_csaf(vex_vulnerabilities, metadata, self.product)
 
 # End of file

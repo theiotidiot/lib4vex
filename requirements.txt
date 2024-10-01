@@ -1,3 +1,4 @@
 lib4sbom >= 0.7.4
 csaf-tool >= 0.3.2
 packageurl-python
+pytest>=8.3.3
